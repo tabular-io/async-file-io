@@ -255,7 +255,11 @@ public class AsyncFileIO extends ResolvingFileIO {
 
     @Override
     public SeekableInputStream newStream() {
-      return delegate().newStream();
+      if (future.isDone()) {
+        return delegate().newStream();
+      } else {
+        return source.newStream();
+      }
     }
 
     @Override
