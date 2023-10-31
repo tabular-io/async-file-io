@@ -364,7 +364,12 @@ public class AsyncFileIO extends ResolvingFileIO {
       if (delegate == null) {
         try {
           this.delegate = future.get();
-          LOG.info("Using downloaded copy of {}", source.location());
+          if (delegate == null) {
+            // This means the download failed
+            this.delegate = source;
+          } else {
+            LOG.info("Using downloaded copy of {}", source.location());
+          }
         } catch (ExecutionException e) {
           LOG.warn("Download failed", e);
           this.delegate = source;
