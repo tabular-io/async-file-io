@@ -56,12 +56,29 @@ public class AsyncFileIO extends ResolvingFileIO {
   private static final String FILE_PREFIX = "file:";
   private static final String ASYNC_ENABLED = "async.enabled";
   private static final String CACHE_LOCATION = "async.cache-location";
+  private static final String ENV_THREAD_POOL_SIZE = "iceberg.async.num-threads";
+  private static final int THREAD_POOL_SIZE_DEFAULT = 8;
 
   // Using a holder instead of double-checked locking
   // see https://stackoverflow.com/questions/6189099/
   private static final class Shared {
-    static final ExecutorService DOWNLOAD_POOL = ThreadPools.newWorkerPool("async-file-io");
+    static final ExecutorService DOWNLOAD_POOL =
+        ThreadPools.newWorkerPool("async-file-io", poolSize());
     static final CacheTracker CACHE_TRACKER = new CacheTracker();
+
+    private static int poolSize() {
+      String poolSize = System.getProperty(ENV_THREAD_POOL_SIZE);
+      if (poolSize != null) {
+        try {
+          return Integer.parseUnsignedInt(poolSize);
+        } catch (NumberFormatException e) {
+          LOG.warn(
+              "Invalid pool size for async downloads: {}={}", ENV_THREAD_POOL_SIZE, poolSize, e);
+        }
+      }
+
+      return THREAD_POOL_SIZE_DEFAULT;
+    }
   }
 
   // identifies a FileIO instance for sharing a cache
@@ -187,7 +204,8 @@ public class AsyncFileIO extends ResolvingFileIO {
   private static final class CacheTracker implements Closeable {
     // keyed by AsyncFileIO UUID
     private final Map<String, Integer> refCounts = Maps.newHashMap();
-    private final Map<String, LoadingCache<InputFileKey, FutureInputFile>> caches = Maps.newHashMap();
+    private final Map<String, LoadingCache<InputFileKey, FutureInputFile>> caches =
+        Maps.newHashMap();
     private final Map<String, IOManager> ioManagers = Maps.newHashMap();
 
     synchronized LoadingCache<InputFileKey, FutureInputFile> cacheFor(AsyncFileIO io) {
@@ -221,19 +239,24 @@ public class AsyncFileIO extends ResolvingFileIO {
       return count;
     }
 
-    private static LoadingCache<InputFileKey, FutureInputFile> newCache(Map<String, IOManager> ioManagers, AsyncFileIO io) {
+    private static LoadingCache<InputFileKey, FutureInputFile> newCache(
+        Map<String, IOManager> ioManagers, AsyncFileIO io) {
       Map<String, String> props = io.properties();
 
-      String baseLocation = props.getOrDefault(CACHE_LOCATION, System.getProperty("java.io.tmpdir"));
+      String baseLocation =
+          props.getOrDefault(CACHE_LOCATION, System.getProperty("java.io.tmpdir"));
       String cacheLocation = cacheLocation(baseLocation, io.uuid);
 
-      IOManager ioManager = ioManagers.computeIfAbsent(io.uuid, cacheLoc -> new IOManager(cacheLocation, newLocalIO(baseLocation, props)));
+      IOManager ioManager =
+          ioManagers.computeIfAbsent(
+              io.uuid, cacheLoc -> new IOManager(cacheLocation, newLocalIO(baseLocation, props)));
 
       return Caffeine.newBuilder()
-              .softValues()
-              .removalListener(
-                      (RemovalListener<InputFileKey, FutureInputFile>) (path, cached, cause) -> ioManager.delete(path))
-              .build(ioManager::download);
+          .softValues()
+          .removalListener(
+              (RemovalListener<InputFileKey, FutureInputFile>)
+                  (path, cached, cause) -> ioManager.delete(path))
+          .build(ioManager::download);
     }
 
     private static void close(LoadingCache<InputFileKey, FutureInputFile> cache) {
@@ -297,7 +320,8 @@ public class AsyncFileIO extends ResolvingFileIO {
   }
 
   /**
-   * A stateless manager for caching files in a FileIO. Provides helper methods but does not track files.
+   * A stateless manager for caching files in a FileIO. Provides helper methods but does not track
+   * files.
    */
   private static class IOManager implements Closeable {
     private final String cacheLocation;
@@ -316,23 +340,23 @@ public class AsyncFileIO extends ResolvingFileIO {
       String cachedPath = cachePath(cacheLocation, source.uuid);
 
       Future<InputFile> downloadFuture =
-              Shared.DOWNLOAD_POOL.submit(
-                      () -> {
-                        LOG.info("Starting download for {}", source);
+          Shared.DOWNLOAD_POOL.submit(
+              () -> {
+                LOG.info("Starting download for {}", source);
 
-                        OutputFile copy = local.newOutputFile(cachedPath);
-                        try (InputStream in = source.newStream();
-                             OutputStream out = copy.createOrOverwrite()) {
-                          ByteStreams.copy(in, out);
-                        } catch (IOException e) {
-                          LOG.warn("Failed to download {} to {}", source, cachedPath, e);
-                          return null;
-                        }
+                OutputFile copy = local.newOutputFile(cachedPath);
+                try (InputStream in = source.newStream();
+                    OutputStream out = copy.createOrOverwrite()) {
+                  ByteStreams.copy(in, out);
+                } catch (IOException e) {
+                  LOG.warn("Failed to download {} to {}", source, cachedPath, e);
+                  return null;
+                }
 
-                        LOG.info("Finished download for {}", source);
+                LOG.info("Finished download for {}", source);
 
-                        return copy.toInputFile();
-                      });
+                return copy.toInputFile();
+              });
 
       return new FutureInputFile(source, downloadFuture);
     }
