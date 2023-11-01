@@ -45,6 +45,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
@@ -400,6 +401,8 @@ public class AsyncFileIO extends ResolvingFileIO {
         } catch (InterruptedException e) {
           Thread.currentThread().interrupt();
           this.delegate = source;
+        } catch (CancellationException e) {
+          this.delegate = source;
         }
       }
 
@@ -412,6 +415,7 @@ public class AsyncFileIO extends ResolvingFileIO {
       if (future.isDone()) {
         return delegate().getLength();
       } else {
+        cancelDownload();
         return source.getLength();
       }
     }
@@ -421,6 +425,7 @@ public class AsyncFileIO extends ResolvingFileIO {
       if (future.isDone()) {
         return delegate().newStream();
       } else {
+        cancelDownload();
         LOG.info("Using remote copy of {}", source.location());
         return source.newStream();
       }
@@ -434,6 +439,13 @@ public class AsyncFileIO extends ResolvingFileIO {
     @Override
     public boolean exists() {
       return source.exists();
+    }
+
+    private void cancelDownload() {
+      boolean cancelled = future.cancel(true);
+      if (!cancelled) {
+        LOG.info("Failed to cancel download, this most likely means the download just completed.");
+      }
     }
   }
 }
